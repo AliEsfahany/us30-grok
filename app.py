@@ -1,81 +1,99 @@
 import streamlit as st
-import yfinance as yf
-import plotly.graph_objects as go
-import time
 import requests
+import pandas as pd
+import plotly.graph_objects as go
 
-st.title("چارت US30 (Dow Jones)")
+st.title("چارت US30 / Dow Jones با Alpha Vantage")
 
-# اضافه کردن user-agent برای جلوگیری از بلاک
-session = requests.Session()
-session.headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+# وارد کردن API Key توسط کاربر
+api_key = st.text_input("API Key Alpha Vantage رو وارد کن:", type="password")
 
-# انتخاب نوع
-option = st.selectbox(
-    "نوع شاخص رو انتخاب کن:",
-    ("US30 Futures (YM=F) - معمول در تریدینگ", 
-     "Dow Jones Industrial Average (^DJI) - شاخص رسمی")
-)
-
-ticker = "YM=F" if "Futures" in option else "^DJI"
-name = "US30 (Dow Jones Futures)" if "Futures" in option else "Dow Jones Industrial Average"
+if not api_key:
+    st.info("لطفاً در https://www.alphavantage.co/support/#api-key ثبت‌نام کن و API Key رایگان بگیر.")
+    st.stop()
 
 # انتخاب بازه زمانی
-period = st.selectbox(
+interval = st.selectbox(
     "بازه زمانی:",
-    ("1mo", "3mo", "6mo", "1y", "2y", "5y"),
-    index=2
+    ("daily", "weekly", "monthly"),
+    index=0
 )
 
-@st.cache_data(ttl=300)  # کش ۵ دقیقه‌ای برای سرعت بیشتر
-def get_data(ticker_symbol, period_time):
-    for attempt in range(3):
-        try:
-            data = yf.download(
-                ticker_symbol,
-                period=period_time,
-                progress=False,
-                session=session,  # استفاده از session با user-agent
-                auto_adjust=True  # قیمت‌ها رو adjust کنه
-            )
-            if not data.empty:
-                return data
-        except Exception as e:
-            time.sleep(2 ** attempt)  # exponential backoff
-    # اگر YM=F شکست خورد، fallback به ^DJI
-    if ticker_symbol == "YM=F":
-        st.warning("دریافت داده برای Futures موقتاً مشکل داره، در حال نمایش شاخص رسمی (^DJI)...")
-        return yf.download("^DJI", period=period_time, progress=False, session=session)
-    return None
+interval_map = {
+    "daily": "روزانه (تا ۲۰ سال)",
+    "weekly": "هفتگی",
+    "monthly": "ماهانه"
+}
 
-with st.spinner("در حال دریافت داده..."):
-    data = get_data(ticker, period)
+function_map = {
+    "daily": "TIME_SERIES_DAILY_ADJUSTED",
+    "weekly": "TIME_SERIES_WEEKLY_ADJUSTED",
+    "monthly": "TIME_SERIES_MONTHLY_ADJUSTED"
+}
 
-if data is None or data.empty:
-    st.error("متأسفانه داده دریافت نشد. بعداً دوباره امتحان کن یا اتصال اینترنت رو چک کن.")
-else:
-    st.success(f"داده‌های {name} دریافت شد ({len(data)} روز)")
+symbol = "DJI"  # نماد Dow Jones در Alpha Vantage
+name = "Dow Jones Industrial Average (US30 Index)"
 
-    # چارت کندل‌استیک
-    fig = go.Figure(data=[go.Candlestick(
-        x=data.index,
-        open=data['Open'],
-        high=data['High'],
-        low=data['Low'],
-        close=data['Close'],
-        name=name
-    )])
+with st.spinner("در حال دریافت داده از Alpha Vantage..."):
+    url = f"https://www.alphavantage.co/query"
+    params = {
+        "function": function_map[interval],
+        "symbol": symbol,
+        "outputsize": "full",  # داده کامل تاریخی
+        "apikey": api_key
+    }
+    
+    response = requests.get(url, params=params)
+    data_json = response.json()
 
-    fig.update_layout(
-        title=f"چارت کندل‌استیک {name} - {period}",
-        xaxis_title="تاریخ",
-        yaxis_title="قیمت (دلار)",
-        xaxis_rangeslider_visible=True,
-        height=700,
-        template="plotly_dark"
-    )
+# چک خطا
+if "Error Message" in data_json:
+    st.error("نماد اشتباه یا داده در دسترس نیست.")
+    st.stop()
+elif "Note" in data_json or "Information" in data_json:
+    st.error("محدودیت درخواست رسیدی (۲۵ در روز). بعداً امتحان کن یا API Key جدید بگیر.")
+    st.stop()
+elif "Time Series" not in data_json:
+    st.error("خطا در دریافت داده: " + str(data_json))
+    st.stop()
 
-    st.plotly_chart(fig, use_container_width=True)
+# پردازش داده
+time_series_key = list(data_json.keys())[1]  # مثلاً "Time Series (Daily)"
+df = pd.DataFrame.from_dict(data_json[time_series_key], orient="index")
+df = df.astype(float)
+df.index = pd.to_datetime(df.index)
+df = df.sort_index()
+df.rename(columns={
+    "1. open": "Open",
+    "2. high": "High",
+    "3. low": "Low",
+    "4. close": "Close",
+    "5. adjusted close": "Close",  # برای adjusted
+    "6. volume": "Volume"
+}, inplace=True)
 
-    if st.checkbox("نمایش جدول داده‌های خام"):
-        st.dataframe(data.tail(50))
+st.success(f"داده‌های {name} دریافت شد ({len(df)} نقطه) - {interval_map[interval]}")
+
+# چارت کندل‌استیک
+fig = go.Figure(data=[go.Candlestick(
+    x=df.index,
+    open=df['Open'],
+    high=df['High'],
+    low=df['Low'],
+    close=df['Close'],
+    name=name
+)])
+
+fig.update_layout(
+    title=f"چارت کندل‌استیک {name} - {interval_map[interval]}",
+    xaxis_title="تاریخ",
+    yaxis_title="قیمت (دلار)",
+    xaxis_rangeslider_visible=True,
+    height=700,
+    template="plotly_dark"
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+if st.checkbox("نمایش جدول داده‌های خام"):
+    st.dataframe(df.tail(50))
