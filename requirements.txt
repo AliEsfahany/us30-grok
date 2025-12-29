@@ -1,3 +1,4 @@
-streamlit
-yfinance
-mplfinance
+streamlit==1.38.0
+finnhub-python==2.4.19
+plotly==5.24.1
+pandas==2.2.3
